@@ -1,0 +1,58 @@
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const express = require('express');
+const cors = require('cors');
+const pino = require('pino');
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+let sock;
+
+async function connectToWhatsApp() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    
+    sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' })
+    });
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                connectToWhatsApp();
+            }
+        } else if (connection === 'open') {
+            console.log('WhatsApp Connected Successfully!');
+        }
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+}
+
+connectToWhatsApp();
+
+// ?????? ??? API Endpoint ??
+app.post('/send-message', async (req, res) => {
+    const { phone, message } = req.body;
+    if (!phone || !message) {
+        return res.status(400).json({ success: false, error: 'Phone and message are required' });
+    }
+
+    // Sri Lankan numbers format: 9477xxxxxxx@s.whatsapp.net
+    let formattedPhone = phone.startsWith('0') ? '94' + phone.slice(1) : phone;
+    const jid = `${formattedPhone}@s.whatsapp.net`;
+
+    try {
+        await sock.sendMessage(jid, { text: message });
+        res.status(200).json({ success: true, message: 'Message sent successfully!' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
